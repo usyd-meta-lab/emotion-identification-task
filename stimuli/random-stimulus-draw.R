@@ -1,0 +1,171 @@
+library(dplyr)
+library(readr)
+library(purrr)
+library(jsonlite)  
+
+set.seed(20250513)   # reproducible random draw
+
+# 1. Load metadata ----------------------------------------------------------
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+pics <- read_csv("13428_2013_379_MOESM1_ESM.csv")
+
+# Set global limit on negative images
+pics <- subset(pics, valence_M > 2.3)
+
+# 2. Bin valence & keep only the bins of interest ---------------------------
+pics_binned <- pics %>% 
+  mutate(
+    val_bin  = round(valence_M),                 # 1–9 integer
+    # val_bin = floor(valence_M), # round down
+    val_type = case_when(
+      val_bin %in% c(6, 7, 8) ~ "positive",
+      val_bin %in% c(2, 3, 4) ~ "negative",
+      TRUE                    ~ NA_character_
+    )
+  ) %>% 
+  filter(!is.na(val_type))                       # drop neutrals/extremes
+
+# 3. Helper: sample 4 images per bin for a single Category ------------------
+get_sample <- function(cat, n_per_bin = 4) {
+  cat_data <- pics_binned %>% filter(Category == cat)
+  selected_ids <- character(0)  # to track already-sampled images
+  result <- list()
+  
+  for (val_type_i in c("negative", "positive")) {
+    bins <- sort(unique(cat_data$val_bin[cat_data$val_type == val_type_i]))
+    
+    for (bin in bins) {
+      # Filter and exclude previously sampled images
+      bin_data <- cat_data %>%
+        filter(val_type == val_type_i, val_bin == bin, !(ID %in% selected_ids))
+      
+      if (nrow(bin_data) >= n_per_bin) {
+        sampled <- slice_sample(bin_data, n = n_per_bin)
+      } else {
+        shortfall <- n_per_bin - nrow(bin_data)
+        # Try sampling extra from the next bin
+        next_bin_data <- cat_data %>%
+          filter(val_type == val_type_i, val_bin == bin + 1, !(ID %in% selected_ids))
+        
+        sampled <- bind_rows(
+          bin_data,
+          slice_sample(next_bin_data, n = shortfall)
+        )
+      }
+      
+      selected_ids <- c(selected_ids, sampled$ID)  # update used IDs
+      result[[paste0(val_type_i, "_", bin)]] <- sampled
+    }
+  }
+  
+  bind_rows(result)
+}
+# 4. Categories to use (exclude “landscapes”) ------------------------------
+cats <- setdiff(unique(pics_binned$Category), "landscapes")
+
+# 5. Draw the balanced sample ----------------------------------------------
+sampled_pictures <- map_dfr(cats, get_sample)
+
+# 5b. Select 10 practice stimuli from bins 4 and 6 -------------------------
+practice_pictures <- pics_binned %>%
+  filter(val_bin %in% c(4, 6)) %>%
+  slice_sample(n = 10)
+
+# Save to CSV
+write_csv(
+  practice_pictures %>%
+    select(ID, Category, valence_M, val_bin, val_type),
+  "practice_pictures.csv"
+)
+
+# 6. Quick sanity checks ----------------------------------------------------
+table(sampled_pictures$Category)                      # 30 each
+table(sampled_pictures$Category, sampled_pictures$val_type)  # 15/15
+table(sampled_pictures$Category, sampled_pictures$val_bin)   # 5 per bin
+
+# 7. (Optional) export ------------------------------------------------------
+write_csv(
+  sampled_pictures %>% 
+    select(ID, Category, valence_M, val_bin, val_type),
+  "picture_sample.csv"
+)
+
+# 8. Export js file matching required format -------------------------------
+
+# Format main stimuli
+sampled_pictures_formatted <- sampled_pictures %>%
+  mutate(image = ID) %>%
+  select(image, category = Category, valence_M, val_bin, val_type)
+
+# Format practice stimuli
+practice_pictures_formatted <- practice_pictures %>%
+  mutate(image = ID) %>%
+  select(image, category = Category, valence_M, val_bin, val_type)
+
+# JSON export
+stimuli_list      <- toJSON(sampled_pictures_formatted, pretty = TRUE, auto_unbox = TRUE)
+prac_stimuli_list <- toJSON(practice_pictures_formatted, pretty = TRUE, auto_unbox = TRUE)
+
+# Combine image paths
+all_image_names <- c(sampled_pictures_formatted$image, practice_pictures_formatted$image)
+image_paths     <- sprintf('"assets/img/%s.jpg"', all_image_names)
+
+# Final JS content
+js_file_content <- paste0(
+  "var stimuli = ", stimuli_list, ";\n\n",
+  "var prac_stimuli = ", prac_stimuli_list, ";\n\n",
+  "/* Auto\u2011generated on ", Sys.Date(), " */\n",
+  "const images = [\n  ",
+  paste(image_paths, collapse = ",\n  "),
+  "\n];\n"
+)
+
+# Write to file
+writeLines(js_file_content, "../scripts/assets/js/stimuli.js")
+
+
+
+# 9. Copy selected image files ---------------------------------------------
+
+# Define paths
+source_dir <- file.path(getwd(), "NAPS COMPLETE")
+dest_dir   <- file.path("../scripts/assets/", "img")
+
+# Create destination folder if it doesn't exist
+if (!dir.exists(dest_dir)) {
+  dir.create(dest_dir)
+}
+
+# Delete existing files in destination folder
+file.remove(list.files(dest_dir, full.names = TRUE))
+
+duplicated(unique(c(sampled_pictures$ID, practice_pictures$ID)))
+# --- Combine IDs from both datasets
+all_ids <- unique(c(sampled_pictures$ID, practice_pictures$ID))
+image_filenames <- paste0(all_ids, ".jpg")
+
+# --- Full paths
+source_files <- file.path(source_dir, image_filenames)
+dest_files   <- file.path(dest_dir, image_filenames)
+
+# --- Check existence
+exists_check <- file.exists(source_files)
+
+# --- Report missing files
+if (any(!exists_check)) {
+  cat("Missing file(s) in source folder:\n")
+  print(image_filenames[!exists_check])
+}
+
+# --- Copy only existing files
+file.copy(from = source_files[exists_check], to = dest_files[exists_check], overwrite = TRUE)
+
+# --- Final summary
+cat("Copied", sum(exists_check), "files out of", length(image_filenames), "\n")
+
+table(sampled_pictures$ID %in% practice_pictures$ID)
+
+
+
+intersect(practice_pictures$ID, sampled_pictures$ID)
+range(sampled_pictures$valence_M)

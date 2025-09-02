@@ -1,0 +1,11 @@
+ID,Category,valence_M,val_bin,val_type
+People_229_h,People,3.9,4,negative
+Objects_138_h,Objects,4.46,4,negative
+Faces_319_v,Faces,5.83,6,positive
+Animals_144_h,Animals,6.08,6,positive
+Objects_249_v,Objects,5.58,6,positive
+Animals_150_h,Animals,5.96,6,positive
+Objects_088_h,Objects,3.55,4,negative
+Faces_299_h,Faces,4.35,4,negative
+Objects_256_h,Objects,6.48,6,positive
+Objects_193_v,Objects,6,6,positive
